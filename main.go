@@ -8,6 +8,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -161,7 +162,9 @@ func spiderCategoryFood(wg *sync.WaitGroup, categoryChannel chan Category, clien
 		}
 
 		if response.StatusCode() != 200 {
-			log.Warn().Msg("状态码错误")
+			log.Warn().
+				Str("url", category.categoryUrl).
+				Msg("状态码错误")
 		}
 
 		recursiveGetPage(category.categoryUrl, client, wg, channel, detailChannel)
@@ -170,6 +173,10 @@ func spiderCategoryFood(wg *sync.WaitGroup, categoryChannel chan Category, clien
 	}
 }
 
+/*
+*
+递归调用获取每个分类的分页内容
+*/
 func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, channel chan string, detailChannel chan []byte) {
 	response, err := client.R().Get(url)
 
@@ -209,6 +216,10 @@ func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, chan
 	}
 }
 
+/*
+*
+解析分页
+*/
 func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, url string, detailChannel chan []byte) {
 	defer wg.Done()
 	functionStart := time.Now().Unix()
@@ -227,6 +238,7 @@ func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, url string, detai
 
 	fromReader.Find("#J_list > ul").Each(func(i int, selection *goquery.Selection) {
 
+		// 详情页
 		foodDetailUrl, foodDetailUrlExists := selection.Find("li div.detail > h2 > a").Attr("href")
 		if foodDetailUrlExists {
 			foodDetailResponse, foodDetailError := client.R().Get(foodDetailUrl)
@@ -238,17 +250,21 @@ func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, url string, detai
 				time.Sleep(time.Second)
 				log.Warn().Int("code", foodDetailResponse.StatusCode()).Str("url", foodDetailUrl).Msg("状态码异常")
 			} else {
-				log.Debug().Msg("parsingPageFood(client *resty.Client, wg *sync.WaitGroup, channel chan []byte, detailChannel chan []byte)")
+				log.Debug().Str("url", url).Msg("parsingPageFood(client *resty.Client, wg *sync.WaitGroup, channel chan []byte, detailChannel chan []byte)")
+
 				detailChannel <- foodDetailResponse.Body()
 			}
 
 		}
-
 	})
 	functionEnd := time.Now().Unix()
 	log.Info().Int64("parsingPageFood执行时间", functionEnd-functionStart).Msg("")
 }
 
+/*
+*
+组装food struct
+*/
 func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan Food) {
 	defer wg.Done()
 	log.Info().Msg("开始执行parseFoodDetail")
@@ -286,7 +302,12 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 		food.Materials = materials
 
 		description := document.Find("#block_txt1").Text()
-		food.Description = description
+		compile, err := regexp.Compile("\\s*|t|r|n")
+		if err != nil {
+			log.Err(err)
+		}
+
+		food.Description = compile.ReplaceAllString(description, "")
 
 		elements := make([]string, 0)
 		document.Find("body > div.wrap > div > div.space_left > div.space_box_home > div > div.recipeCategory_sub_R.mt30.clear > ul li").
@@ -297,7 +318,6 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 				}
 			})
 
-		// todo 这里需要修改一下
 		if len(elements) == 4 {
 			food.Flavor = elements[0]
 			food.Craft = elements[1]
@@ -315,6 +335,7 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 			if strings.HasPrefix(split[i], "使用的厨具：") {
 				food.Ware = strings.Split(split[i], "：")[1]
 			}
+
 			if flag && i < len(split)-1 {
 				categoryList = append(categoryList, split[i])
 			}
@@ -334,6 +355,12 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 					Content: "",
 				}
 				content := selection.Find("div.recipeStep_word").Text()
+				compile, err2 := regexp.Compile("^[0-9]*")
+				if err2 != nil {
+					log.Err(err2)
+				}
+				content = compile.ReplaceAllString(content, "")
+
 				img, imgExits := selection.Find(" div.recipeStep_img > img").Attr("src")
 				if imgExits {
 					step.Image = img
@@ -362,10 +389,14 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 	log.Info().Int64("parseFoodDetail执行时间", functionEnd-functionStart).Msg("")
 }
 
-func writeFile(foodChannel chan Food, group *sync.WaitGroup) {
+/*
+*
+写文件
+*/
+func writeFile(foodChannel chan Food, group *sync.WaitGroup, filePath string) {
 	defer group.Done()
 
-	filePath := "food.json"
+	filePath = filePath
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		log.Err(err)
@@ -391,11 +422,18 @@ func writeFile(foodChannel chan Food, group *sync.WaitGroup) {
 			log.Err(err)
 			return
 		}
+		// 替换特殊字符
+		stringJson := string(foodToJson)
 
-		i, err := writer.WriteString(string(foodToJson) + "\n")
-		writer.Flush()
+		i, err := writer.WriteString(stringJson + "\n")
+		err = writer.Flush()
 		if err != nil {
 			log.Err(err)
+			return
+		}
+		if err != nil {
+			log.Err(err)
+			return
 		}
 		log.Info().Int("i", i)
 	}
@@ -418,11 +456,11 @@ func main() {
 	categoryPageChannel := make(chan []byte)
 	// 分类信息channel
 	categoryChannel := make(chan Category)
-
+	// 每页分类channel
 	categoryFoodChannel := make(chan string)
-
+	// 详情url channel
 	foodDetailChannel := make(chan []byte)
-
+	// 写文件需要获取整个food struct的channel
 	writeFileChannel := make(chan Food)
 
 	var wg sync.WaitGroup
@@ -434,13 +472,18 @@ func main() {
 
 	// 开启20个协程遍历分类url
 	wg.Add(1)
-	go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel, foodDetailChannel)
+	for i := 0; i < 20; i++ {
+		go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel, foodDetailChannel)
+	}
 
 	wg.Add(1)
 	go parseFoodDetail(foodDetailChannel, &wg, writeFileChannel)
 
 	wg.Add(1)
-	go writeFile(writeFileChannel, &wg)
+	// 开20个协程写文件
+	for i := 0; i < 20; i++ {
+		go writeFile(writeFileChannel, &wg, "food.json")
+	}
 
 	wg.Wait()
 }
