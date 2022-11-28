@@ -146,7 +146,7 @@ func parseCategoryPage(wg *sync.WaitGroup, categoryPageChannel chan []byte, cate
 	log.Info().Int64("parseCategoryPage执行时间", functionEnd-functionStart).Msg("")
 }
 
-func spiderCategoryFood(wg *sync.WaitGroup, categoryChannel chan Category, client *resty.Client, channel chan string) {
+func spiderCategoryFood(wg *sync.WaitGroup, categoryChannel chan Category, client *resty.Client, channel chan string, detailChannel chan []byte) {
 	defer wg.Done()
 	functionStart := time.Now().Unix()
 	log.Info().Msg("开始执行spiderCategoryFood")
@@ -164,14 +164,13 @@ func spiderCategoryFood(wg *sync.WaitGroup, categoryChannel chan Category, clien
 			log.Warn().Msg("状态码错误")
 		}
 
-		wg.Add(1)
-		go recursiveGetPage(category.categoryUrl, client, wg, channel)
+		recursiveGetPage(category.categoryUrl, client, wg, channel, detailChannel)
 		functionEnd := time.Now().Unix()
 		log.Info().Int64("spiderCategoryFood执行时间", functionEnd-functionStart).Msg("")
 	}
 }
 
-func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, channel chan string) {
+func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, channel chan string, detailChannel chan []byte) {
 	response, err := client.R().Get(url)
 
 	log.Info().Msg("开始执行recursiveGetPage")
@@ -189,7 +188,7 @@ func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, chan
 		log.Err(err)
 	}
 	nextPageUrl, exists := fromReader.
-		Find("body > div.wrap > div > div.space_left > div.ui-page.mt10 > div > a:contains(下一页)").
+		Find("a:contains(下一页)").
 		Attr("href")
 
 	log.Debug().Str("nextPage", nextPageUrl).Msg("")
@@ -199,22 +198,23 @@ func recursiveGetPage(url string, client *resty.Client, wg *sync.WaitGroup, chan
 		if err != nil {
 			log.Err(err)
 		}
-		channel <- nextPageUrl
+
+		wg.Add(1)
+		go parsingPageFood(client, wg, url, detailChannel)
 
 		functionEnd := time.Now().Unix()
 		log.Info().Int64("recursiveGetPage执行时间", functionEnd-functionStart).Msg("")
 
-		recursiveGetPage(nextPageUrl, client, wg, channel)
+		recursiveGetPage(nextPageUrl, client, wg, channel, detailChannel)
 	}
 }
 
-func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, channel chan string, detailChannel chan []byte) {
+func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, url string, detailChannel chan []byte) {
 	defer wg.Done()
 	functionStart := time.Now().Unix()
 	log.Info().Msg("开始执行parsingPageFood")
 
-	i := <-channel
-	get, err2 := client.R().Get(i)
+	get, err2 := client.R().Get(url)
 	if err2 != nil {
 		log.Err(err2)
 	}
@@ -225,7 +225,7 @@ func parsingPageFood(client *resty.Client, wg *sync.WaitGroup, channel chan stri
 		log.Err(err)
 	}
 
-	fromReader.Find("#J_list > ul > li").Each(func(i int, selection *goquery.Selection) {
+	fromReader.Find("#J_list > ul").Each(func(i int, selection *goquery.Selection) {
 
 		foodDetailUrl, foodDetailUrlExists := selection.Find("li div.detail > h2 > a").Attr("href")
 		if foodDetailUrlExists {
@@ -285,10 +285,8 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 			})
 		food.Materials = materials
 
-		document.Find("#block_txt1").Each(func(i int, selection *goquery.Selection) {
-			text := selection.Text()
-			food.Description = text
-		})
+		description := document.Find("#block_txt1").Text()
+		food.Description = description
 
 		elements := make([]string, 0)
 		document.Find("body > div.wrap > div > div.space_left > div.space_box_home > div > div.recipeCategory_sub_R.mt30.clear > ul li").
@@ -298,10 +296,14 @@ func parseFoodDetail(detailChannel chan []byte, wg *sync.WaitGroup, channel chan
 					elements = append(elements, name)
 				}
 			})
-		food.Flavor = elements[0]
-		food.Craft = elements[1]
-		food.TimeConsuming = elements[2]
-		food.Difficulty = elements[3]
+
+		// todo 这里需要修改一下
+		if len(elements) == 4 {
+			food.Flavor = elements[0]
+			food.Craft = elements[1]
+			food.TimeConsuming = elements[2]
+			food.Difficulty = elements[3]
+		}
 
 		text := document.Find(".recipeTip").Text()
 		text = strings.ReplaceAll(text, "\t", "")
@@ -389,6 +391,7 @@ func writeFile(foodChannel chan Food, group *sync.WaitGroup) {
 			log.Err(err)
 			return
 		}
+
 		i, err := writer.WriteString(string(foodToJson) + "\n")
 		writer.Flush()
 		if err != nil {
@@ -431,10 +434,7 @@ func main() {
 
 	// 开启20个协程遍历分类url
 	wg.Add(1)
-	go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel)
-
-	wg.Add(1)
-	go parsingPageFood(httpClient, &wg, categoryFoodChannel, foodDetailChannel)
+	go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel, foodDetailChannel)
 
 	wg.Add(1)
 	go parseFoodDetail(foodDetailChannel, &wg, writeFileChannel)
