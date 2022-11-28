@@ -470,20 +470,14 @@ func main() {
 	wg.Add(1)
 	go parseCategoryPage(&wg, categoryPageChannel, categoryChannel)
 
-	// 开启20个协程遍历分类url
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel, foodDetailChannel)
-	}
+	wg.Add(1)
+	go spiderCategoryFood(&wg, categoryChannel, httpClient, categoryFoodChannel, foodDetailChannel)
 
 	wg.Add(1)
 	go parseFoodDetail(foodDetailChannel, &wg, writeFileChannel)
 
-	// 开20个协程写文件
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go writeFile(writeFileChannel, &wg, "food.json")
-	}
+	wg.Add(1)
+	go writeFile(writeFileChannel, &wg, "food.json")
 
 	wg.Wait()
 }
