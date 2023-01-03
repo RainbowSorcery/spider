@@ -5,7 +5,6 @@ go 1.19
 require (
 	github.com/PuerkitoBio/goquery v1.8.0
 	github.com/go-resty/resty/v2 v2.7.0
-	github.com/rs/zerolog v1.28.0
 )
 
 require (
@@ -18,6 +17,7 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.21 // indirect
+	github.com/pquerna/ffjson v0.0.0-20190930134022-aa0246cd15f7 // indirect
 	github.com/stephens2424/writerset v1.0.2 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
